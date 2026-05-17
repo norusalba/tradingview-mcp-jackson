@@ -3,7 +3,11 @@
  */
 import { getClient, getTargetInfo, evaluate } from '../connection.js';
 import { existsSync } from 'fs';
-import { execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export async function healthCheck() {
   await getClient();
@@ -159,6 +163,35 @@ export async function uiState() {
   return { success: true, ...state };
 }
 
+async function waitForCdp(cdpPort, details) {
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const http = await import('http');
+      const ready = await new Promise((resolveReady) => {
+        http.get(`http://localhost:${cdpPort}/json/version`, (res) => {
+          let data = '';
+          res.on('data', (chunk) => data += chunk);
+          res.on('end', () => resolveReady(data));
+        }).on('error', () => resolveReady(null));
+      });
+      if (ready) {
+        const info = JSON.parse(ready);
+        return {
+          success: true, ...details,
+          cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
+          browser: info.Browser, user_agent: info['User-Agent'],
+        };
+      }
+    } catch { /* retry */ }
+  }
+
+  return {
+    success: true, ...details, cdp_port: cdpPort, cdp_ready: false,
+    warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
+  };
+}
+
 export async function launch({ port, kill_existing } = {}) {
   const cdpPort = port || 9222;
   const killFirst = kill_existing !== false;
@@ -207,6 +240,23 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* ignore */ }
   }
 
+  if (!tvPath && platform === 'win32') {
+    const launcher = resolve(__dirname, '../../scripts/launch_tv_debug_msix.ps1');
+    if (existsSync(launcher)) {
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher, '-Port', String(cdpPort)];
+      if (!killFirst) args.push('-NoKill');
+
+      execFileSync('powershell.exe', args, { timeout: 30000, encoding: 'utf8' });
+      return await waitForCdp(cdpPort, {
+        platform,
+        binary: 'MSIX/WindowsApps',
+        pid: null,
+        launch_method: 'Invoke-CommandInDesktopPackage',
+        launcher,
+      });
+    }
+  }
+
   if (!tvPath) {
     throw new Error(`TradingView not found on ${platform}. Searched: ${candidates.join(', ')}. Launch manually with: /path/to/TradingView --remote-debugging-port=${cdpPort}`);
   }
@@ -222,30 +272,5 @@ export async function launch({ port, kill_existing } = {}) {
   const child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
   child.unref();
 
-  for (let i = 0; i < 15; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const http = await import('http');
-      const ready = await new Promise((resolve) => {
-        http.get(`http://localhost:${cdpPort}/json/version`, (res) => {
-          let data = '';
-          res.on('data', (chunk) => data += chunk);
-          res.on('end', () => resolve(data));
-        }).on('error', () => resolve(null));
-      });
-      if (ready) {
-        const info = JSON.parse(ready);
-        return {
-          success: true, platform, binary: tvPath, pid: child.pid,
-          cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
-          browser: info.Browser, user_agent: info['User-Agent'],
-        };
-      }
-    } catch { /* retry */ }
-  }
-
-  return {
-    success: true, platform, binary: tvPath, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
-    warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
-  };
+  return await waitForCdp(cdpPort, { platform, binary: tvPath, pid: child.pid });
 }

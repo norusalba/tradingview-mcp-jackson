@@ -58,6 +58,12 @@ Mac:
 Windows:
 ```bash
 %LOCALAPPDATA%\TradingView\TradingView.exe --remote-debugging-port=9222
+
+#다음부터는 프로젝트 루트에서 이렇게 실행하면 됩니다. (2026/05/17 추가)
+.\scripts\launch_tv_debug.bat
+
+#또는 직접 PowerShell로,  (2026/05/17 추가)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\launch_tv_debug_msix.ps1 -Port 9222
 ```
 
 Linux:
