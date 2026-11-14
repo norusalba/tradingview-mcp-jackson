@@ -1,6 +1,7 @@
 param(
   [int]$Port = 9222,
-  [switch]$NoKill
+  [switch]$NoKill,
+  [switch]$PreventBreakaway
 )
 
 $ErrorActionPreference = 'Stop'
@@ -110,12 +111,19 @@ if ($classicPath) {
   }
 
   Write-Host "Found MSIX TradingView at: $($msixInfo.Executable)"
-  Invoke-CommandInDesktopPackage `
-    -PackageFamilyName $msixInfo.PackageFamilyName `
-    -AppId $msixInfo.AppId `
-    -Command $msixInfo.Executable `
-    -Args "--remote-debugging-port=$Port" `
-    -PreventBreakaway
+  # NOTE: -PreventBreakaway keeps the app attached to the caller's job object, so
+  # TradingView is terminated as soon as the launching shell exits (e.g. an MCP /
+  # agent tool call). Only opt in when that behavior is actually wanted.
+  $launchParams = @{
+    PackageFamilyName = $msixInfo.PackageFamilyName
+    AppId             = $msixInfo.AppId
+    Command           = $msixInfo.Executable
+    Args              = "--remote-debugging-port=$Port"
+  }
+  if ($PreventBreakaway) {
+    $launchParams.PreventBreakaway = $true
+  }
+  Invoke-CommandInDesktopPackage @launchParams
 }
 
 Write-Host "Waiting for CDP at http://127.0.0.1:$Port ..."
